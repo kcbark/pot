@@ -26,10 +26,6 @@ start-cleanup()
 		return
 	fi
 	if [ -n "$2" ] && _is_valid_netif "${2}a" ; then
-		sleep 1 # try to avoid a race condition in the epair driver,
-			# potentially causing a kernel panic, which should
-			# be fixed in FreeBSD 13.1:
-			# https://cgit.freebsd.org/src/commit/?h=stable/13&id=f4aba8c9f0c
 		ifconfig "${2}a" destroy
 	fi
 	pot-cmd stop "$_pname"
@@ -105,19 +101,15 @@ _js_etc_hosts()
 	_hostname="$( _get_conf_var "$_pname" host.hostname )"
 	printf "::1 localhost %s\n" "$_hostname" > "$_phosts"
 	printf "127.0.0.1 localhost %s\n" "$_hostname" >> "$_phosts"
-	if [ "$(_get_conf_var "$_pname" "pot.attr.no-etc-hosts")" = "YES" ]; then
-		_debug "Attribute no-etchosts: no additional /etc/hosts entries injected"
-	else
-		case "$( _get_conf_var "$_pname" network_type )" in
-		"public-bridge")
-			potnet etc-hosts >> "$_phosts"
-			;;
-		"private-bridge")
-			_bridge_name="$( _get_conf_var "$_pname" bridge )"
-			potnet etc-hosts -b "$_bridge_name" >> "$_phosts"
-			;;
-		esac
-	fi
+	case "$( _get_conf_var "$_pname" network_type )" in
+	"public-bridge")
+		potnet etc-hosts >> "$_phosts"
+		;;
+	"private-bridge")
+		_bridge_name="$( _get_conf_var "$_pname" bridge )"
+		potnet etc-hosts -b "$_bridge_name" >> "$_phosts"
+		;;
+	esac
 	_cfile="${POT_FS_ROOT}/jails/$_pname/conf/pot.conf"
 	grep '^pot.hosts=' "$_cfile" | sed 's/^pot.hosts=//g' >> "$_phosts"
 }
@@ -125,8 +117,7 @@ _js_etc_hosts()
 _js_create_epair()
 {
 	local _epair
-	_epair=$(ifconfig epair create descr "$_pname" group "pot")
-
+	_epair=$(ifconfig epair create)
 	if [ -z "${_epair}" ]; then
 		_error "ifconfig epair failed"
 		start-cleanup "$_pname"
@@ -153,17 +144,9 @@ _js_vnet()
 	_ip=$( _get_ip_var "$_pname" )
 	## if norcscript - write a ad-hoc one
 	if [ "$(_get_conf_var "$_pname" "pot.attr.no-rc-script")" = "YES" ]; then
-		cat >>"${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc" <<-EOT
-		if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		    sleep 1
-		    if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		        >&2 echo "Interface ${_epairb} does not exist"
-		        exit 1
-		    fi
-		fi
-		ifconfig ${_epairb} inet $_ip netmask $POT_NETMASK
-		route add default $POT_GATEWAY
-		EOT
+		touch "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "ifconfig ${_epairb} inet $_ip netmask $POT_NETMASK" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "route add default $POT_GATEWAY" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
 	else # use rc scripts
 		# set the network configuration in the pot's rc.conf
 		if [ -w "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" ]; then
@@ -189,25 +172,23 @@ _js_vnet_ipv6()
 	_epairb="${2}b"
 	ifconfig "${_epair}" up
 	ifconfig "$_bridge" addm "${_epair}"
+	_ip=$( _get_ip6_var "$_pname"  )
+	_prefixlen=$( _get_ip6_prefixlen "$_pname"  )
 	if [ "$(_get_conf_var "$_pname" "pot.attr.no-rc-script")" = "YES" ]; then
-		cat >>"${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc" <<-EOT
-		if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		    sleep 1
-		    if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		        >&2 echo "Interface ${_epairb} does not exist"
-		        exit 1
-		    fi
-		fi
-		ifconfig ${_epairb} inet6 up accept_rtadv
-		/sbin/rtsol -d ${_epairb}
-		EOT
+		touch "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "ifconfig ${_epairb} inet6 up accept_rtadv" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "/sbin/rtsol -d ${_epairb}" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
 	else # use rc scripts
 		# set the network configuration in the pot's rc.conf
 		if [ -w "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" ]; then
 			sed -i '' '/ifconfig_epair[0-9][0-9]*[ab]_ipv6/d' "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf"
 		fi
 		echo "ifconfig_${_epairb}_ipv6=\"inet6 accept_rtadv auto_linklocal\"" >> "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf"
-		sysrc -f "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" rtsold_enable="YES"
+    if [ "$_ip" != "" ]; then
+		  sysrc -f "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" ifconfig_${_epairb}_ipv6="inet6 $_ip prefixlen $_prefixlen"
+    else 
+		  sysrc -f "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" rtsold_enable="YES"
+    fi
 		# Fix a bug in the rtsold rc script in 11.3
 		sed -i '' 's/nojail/nojailvnet/' "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.d/rtsold"
 	fi
@@ -235,17 +216,9 @@ _js_private_vnet()
 	_gateway="$(_get_bridge_var "$_bridge_name" gateway)"
 	## if norcscript - write a ad-hoc one
 	if [ "$(_get_conf_var "$_pname" "pot.attr.no-rc-script")" = "YES" ]; then
-		cat >>"${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc" <<-EOT
-		if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		    sleep 1
-		    if ! ifconfig ${_epairb} >/dev/null 2>&1; then
-		        >&2 echo "Interface ${_epairb} does not exist"
-		        exit 1
-		    fi
-		fi
-		ifconfig ${_epairb} inet $_ip/$_net_size
-		route add default $_gateway
-		EOT
+		touch "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "ifconfig ${_epairb} inet $_ip/$_net_size" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
+		echo "route add default $_gateway" >> "${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc"
 	else # use rc scripts
 		# set the network configuration in the pot's rc.conf
 		if [ -w "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.con"f ]; then
@@ -412,7 +385,7 @@ _js_env()
 _js_start()
 {
 	local _pname _confdir _iface _hostname _osrelease _param _ip _cmd _persist
-	local _stack _value _name _type _wait_pid _exit_code
+	local _stack _value _name _type
 	_pname="$1"
 	_confdir="${POT_FS_ROOT}/jails/$_pname/conf"
 	_iface=
@@ -442,29 +415,6 @@ _js_start()
 		_param="$_param persist"
 	else
 		_param="$_param nopersist"
-	fi
-	if [ "$(_get_conf_var "$_pname" "pot.attr.no-rc-script")" = "YES" ]; then
-		if [ "$( _get_pot_network_stack "$_pname" )" = "ipv4" ]; then
-			prec=100
-		else
-			prec=35
-		fi
-		cat >>"${POT_FS_ROOT}/jails/$_pname/m/tmp/tinirc" <<-EOT
-		if sysctl -n kern.features.inet6 >/dev/null 2>&1; then
-		        ip6addrctl flush >/dev/null 2>&1
-		        ip6addrctl install /dev/stdin <<EOF
-		        ::1/128		 50	 0
-		        ::/0		 40	 1
-		        ::ffff:0:0/96	 $prec	 4
-		        2002::/16	 30	 2
-		        2001::/32	  5	 5
-		        fc00::/7	  3	13
-		        ::/96		  1	 3
-		        fec0::/10	  1	11
-		        3ffe::/16	  1	12
-		EOF
-		fi
-		EOT
 	fi
 	case "$( _get_conf_var "$_pname" network_type )" in
 	"inherit")
@@ -550,7 +500,7 @@ _js_start()
 		(
 			# shellcheck disable=SC2046
 			eval $( pot info -E -p "$_pname" )
-			"$_confdir/prestart.sh"
+			"$_confdir/conf/prestart.sh"
 		)
 	fi
 
@@ -558,7 +508,7 @@ _js_start()
 
 	_info "Starting the pot $_pname"
 	# shellcheck disable=SC2086
-	jail -c $_param exec.start="sh -c 'sleep 1234&'"
+	jail -c $_param exec.start="sh -c 'sleep 5&'"
 
 	if [ -e "$_confdir/pot.conf" ] && _is_pot_prunable "$_pname" ; then
 		# set-attr cannot be used for read-only attributes
@@ -580,42 +530,28 @@ _js_start()
 		(
 			# shellcheck disable=SC2046
 			eval $( pot info -E -p "$_pname" )
-			"$_confdir/poststart.sh"
+			"$_confdir/conf/poststart.sh"
 		)
 	fi
 
-	sleep 0.5
-	pkill -f -j "$_pname" "^sleep 1234$"
-
 	wait "$_wait_pid"
-	_exit_code=$?
 
-	echo "{ \"ExitCode\": $_exit_code }" > "$_confdir/.last_run_stats"
-
-	if [ "$_persist" = "NO" ]; then
-		# non-persistent jails always need to die
+	if ! _is_pot_running "$_pname" ; then
 		if [ ! -e "${POT_TMP:-/tmp}/pot_stopped_${_pname}" ]; then
 			start-cleanup "$_pname" "${_iface}"
 		fi
 		rm -f "${POT_TMP:-/tmp}/pot_stopped_${_pname}"
-
-		if [ "$_exit_code" -ne 0 ]; then
-			# return code to signal application exit error
-			return 125
+		if [ "$_persist" = "NO" ]; then
+			return 0
+		else
+			return 1
 		fi
-	elif ! _is_pot_running "$_pname" ; then
-		# persistent jail didn't come up, this is an error
-		if [ ! -e "${POT_TMP:-/tmp}/pot_stopped_${_pname}" ]; then
-			start-cleanup "$_pname" "${_iface}"
-		fi
-		rm -f "${POT_TMP:-/tmp}/pot_stopped_${_pname}"
-		return 1
 	fi
 }
 
 pot-start()
 {
-	local _pname _snap _start_result
+	local _pname _snap
 	_snap=none
 	_pname=
 	OPTIND=1
@@ -714,12 +650,7 @@ pot-start()
 		return 1
 	fi
 	_js_etc_hosts "$_pname"
-	_js_start "$_pname"
-	_start_result=$?
-	if [ $_start_result -eq 125 ]; then
-		_error "$_pname reported application error"
-		return 125
-	elif [ $_start_result -ne 0 ]; then
+	if ! _js_start "$_pname" ; then
 		_error "$_pname failed to start"
 		return 1
 	fi

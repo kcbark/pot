@@ -5,7 +5,7 @@
 : "${ECHO:=echo}"
 : "${SED:=sed}"
 
-_POT_RW_ATTRIBUTES="start-at-boot early-start-at-boot persistent no-rc-script prunable localhost-tunnel no-tmpfs no-etc-hosts"
+_POT_RW_ATTRIBUTES="start-at-boot early-start-at-boot persistent no-rc-script prunable localhost-tunnel"
 _POT_RO_ATTRIBUTES="to-be-pruned"
 _POT_NETWORK_TYPES="inherit alias public-bridge private-bridge"
 
@@ -243,55 +243,6 @@ _get_zfs_dataset()
 	echo "$_dset"
 }
 
-# check if POT_ZFS_ROOT supports given property
-# $1 the property to check
-_is_zfs_property_supported()
-{
-	local _properties _ret
-
-	_properties=$(zfs get -o property all "${POT_ZFS_ROOT}")
-	_ret=$?
-	if [ $_ret -ne 0 ]; then
-		_error "Could not determine if $POT_ZFS_ROOT supports encryption"
-		return 2 # error
-	fi
-	if echo "$_properties" | grep -xq "$1" ; then
-		return 0 # true
-	else
-		return 1 # false
-	fi
-}
-
-# get extra arguments to be added to the zfs receive command.
-# Output can be used without addional escaping.
-# In case of errors, the returned string will make sure
-# the zfs receive command fails in case the called
-# didn't check the return value.
-#
-# Usage:
-#     zfs receive $(_get_zfs_receive_extra_args) pool/fs
-_get_zfs_receive_extra_args()
-{
-	local _ret
-
-	_is_zfs_property_supported "encryption"
-	_ret=$?
-	case $_ret in
-		0)	# encryption supported
-			echo "-x encryption"
-			return 0
-			;;
-		1)	# encryption not supported
-			echo ""
-			return 0
-			;;
-		*)	# communicate error
-			echo "-x therewasanerror"
-			return 1
-			;;
-	esac
-}
-
 # take a zfs recursive snapshot of a pot
 # $1 pot name
 _pot_zfs_snap()
@@ -478,6 +429,28 @@ _get_ip_var()
 	_pname="$1"
 	_cdir="${POT_FS_ROOT}/jails/$_pname/conf"
 	_value="$( grep "^ip=" "$_cdir/pot.conf" | sed 's/^ip=//' )"
+	echo "$_value"
+}
+
+# $1 pot name
+# $2 var name
+_get_ip6_var()
+{
+	local _pname _cdir _var _value
+	_pname="$1"
+	_cdir="${POT_FS_ROOT}/jails/$_pname/conf"
+	_value="$( grep "^ip6=" "$_cdir/pot.conf" | sed 's/^ip6=//' | awk -F\/ '{print $1}' )"
+	echo "$_value"
+}
+
+# $1 pot name
+# $2 var name
+_get_ip6_prefixlen()
+{
+	local _pname _cdir _var _value
+	_pname="$1"
+	_cdir="${POT_FS_ROOT}/jails/$_pname/conf"
+	_value="$( grep "^ip6=" "$_cdir/pot.conf" | awk -F\/ '{print $2}' )"
 	echo "$_value"
 }
 
@@ -698,13 +671,6 @@ _is_natural_number()
 	esac
 }
 
-# $1 a string
-# tested ( common8 )
-_contains_spaces()
-{
-	echo "$1" | grep -q "[[:space:]]"
-}
-
 # $1 mountpoint
 # tested
 _is_mounted()
@@ -899,7 +865,7 @@ _print_pot_fscomp()
 	while read -r line ; do
 		_dset=$( echo "$line" | awk '{print $1}' )
 		_mnt_p=$( echo "$line" | awk '{print $2}' )
-		printf "\\t\\t%s => %s\\n" "${_mnt_p##"${POT_FS_ROOT}"/jails/}" "${_dset##"${POT_ZFS_ROOT}"/}"
+		printf "\\t\\t%s => %s\\n" "${_mnt_p##${POT_FS_ROOT}/jails/}" "${_dset##${POT_ZFS_ROOT}/}"
 	done < "$1"
 }
 
@@ -973,15 +939,11 @@ _pot_mount()
 			fi
 		fi
 	done < "${POT_FS_ROOT}/jails/$_pname/conf/fscomp.conf"
-	if [ "$(_get_conf_var "$_pname" pot.attr.no-tmpfs)" = "YES" ]; then
-		_debug "Not mounting tmpfs because of no-tmppfs attribure"
+	if ! mount -t tmpfs tmpfs "${POT_FS_ROOT}/jails/$_pname/m/tmp" ; then
+		_error "Error mounting tmpfs"
+		return 1
 	else
-		if ! mount -t tmpfs tmpfs "${POT_FS_ROOT}/jails/$_pname/m/tmp" ; then
-			_error "Error mounting tmpfs"
-			return 1
-		else
-			_debug "mount ${POT_FS_ROOT}/jails/$_pname/m/tmp"
-		fi
+		_debug "mount ${POT_FS_ROOT}/jails/$_pname/m/tmp"
 	fi
 	return 0 # true
 }
@@ -997,11 +959,7 @@ _pot_umount()
 	fi
 	_jdir="${POT_FS_ROOT}/jails/$_pname"
 
-	if [ "$(_get_conf_var "$_pname" pot.attr.no-tmpfs)" = "YES" ]; then
-		_debug "Not umounting tmpfs because of no-tmppfs attribure"
-	else
-		_umount "$_jdir/m/tmp"
-	fi
+	_umount "$_jdir/m/tmp"
 	if [ "$(_get_conf_var "$_pname" "pot.attr.fdescfs")" = "YES" ]; then
 		_umount "$_jdir/m/dev/fs"
 	fi
@@ -1066,12 +1024,6 @@ pot-cmd()
 				export _POT_RECURSIVE=1
 				lockf -k /tmp/pot-lock-file "$_POT_PATHNAME" "$_cmd" "$@"
 			fi
-			;;
-		config|get-attr|get-rss|info|last-run-stats|list|ps|show|top)
-			if _is_verbose ; then
-				logger -p "${POT_LOG_FACILITY}".debug -t pot "$_func $*"
-			fi
-			$_func "$@"
 			;;
 		*)
 			logger -p "${POT_LOG_FACILITY}".info -t pot "$_func $*"
