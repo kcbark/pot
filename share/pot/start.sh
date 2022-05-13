@@ -182,7 +182,7 @@ _js_vnet()
 # $2 epair interface
 _js_vnet_ipv6()
 {
-	local _pname _bridge _epair _epairb _ip
+	local _pname _bridge _epair _epairb _ip _epairb_mac
 	_pname=$1
 	if ! _is_vnet_ipv6_up ; then
 		_info "Internal network not found! Calling vnet-start to fix the issue"
@@ -191,6 +191,7 @@ _js_vnet_ipv6()
 	_bridge=$(_pot_bridge_ipv6)
 	_epair=${2}a
 	_epairb="${2}b"
+	_epairb_mac=$(_get_epairb_mac_var "$_pname")
 	ifconfig "${_epair}" up
 	ifconfig "$_bridge" addm "${_epair}"
 	if [ "$(_get_conf_var "$_pname" "pot.attr.no-rc-script")" = "YES" ]; then
@@ -202,6 +203,10 @@ _js_vnet_ipv6()
 		        exit 1
 		    fi
 		fi
+		if [ ! -z "$_epairb_mac" ];
+		then
+			ifconfig ${_epairb} ether ${_epairb_mac} up
+		fi
 		ifconfig ${_epairb} inet6 up accept_rtadv
 		/sbin/rtsol -d ${_epairb}
 		EOT
@@ -211,6 +216,10 @@ _js_vnet_ipv6()
 			sed -i '' '/ifconfig_epair[0-9][0-9]*[ab]_ipv6/d' "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf"
 		fi
 		echo "ifconfig_${_epairb}_ipv6=\"inet6 accept_rtadv auto_linklocal\"" >> "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf"
+		if [ ! -z "$_epairb_mac" ];
+		then
+			echo "ifconfig_${_epairb}=\"ether ${_epairb_mac} up\"" >> "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf"
+		fi
 		sysrc -f "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.conf" rtsold_enable="YES"
 		# Fix a bug in the rtsold rc script in 11.3
 		sed -i '' 's/nojail/nojailvnet/' "${POT_FS_ROOT}/jails/$_pname/m/etc/rc.d/rtsold"
