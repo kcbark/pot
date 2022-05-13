@@ -480,6 +480,16 @@ _get_ip_var()
 	_value="$( grep "^ip=" "$_cdir/pot.conf" | sed 's/^ip=//' )"
 	echo "$_value"
 }
+# $1 pot name
+# $2 var name
+_get_epairb_mac_var()
+{
+	local _pname _cdir _var _value
+	_pname="$1"
+	_cdir="${POT_FS_ROOT}/jails/$_pname/conf"
+	_value="$( grep "^epairb_mac=" "$_cdir/pot.conf" | sed 's/^epairb_mac=//' | awk -F\/ '{print $1}' )"
+	echo "$_value"
+}
 
 _get_pot_export_ports()
 {
