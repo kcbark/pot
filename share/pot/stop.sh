@@ -36,7 +36,7 @@ _js_stop()
 	_network_type=$( _get_pot_network_type "$_pname" )
 	if _is_pot_running "$_pname" ; then
 		if _is_pot_vnet "$_pname" ; then
-			_epair=$(jexec "$_pname" ifconfig | grep ^epair | cut -d':' -f1)
+			_epair=$(jexec "$_pname" ifconfig | grep ^epair | cut -d':' -f1 | sed 's/\n//g')
 		fi
 
 		if [ -x "$_pdir/conf/prestop.sh" ]; then
@@ -51,12 +51,14 @@ _js_stop()
 		touch "${POT_TMP:-/tmp}/pot_stopped_${_pname}"
 		jail -q -r "$_pname"
 		if [ -n "$_epair" ]; then
-			_debug "Remove ${_epair%b}[a|b] network interfaces"
-			sleep 1 # try to avoid a race condition in the epair driver,
-			        # potentially causing a kernel panic, which should
-			        # be fixed in FreeBSD 13.1:
-			        # https://cgit.freebsd.org/src/commit/?h=stable/13&id=f4aba8c9f0c
-			ifconfig "${_epair%b}"a destroy
+			for i in ${_epair}; do
+				_debug "Remove ${i%b}[a|b] network interfaces"
+				sleep 1 # try to avoid a race condition in the epair driver,
+					# potentially causing a kernel panic, which should
+					# be fixed in FreeBSD 13.1:
+					# https://cgit.freebsd.org/src/commit/?h=stable/13&id=f4aba8c9f0c
+				ifconfig "${i%b}"a destroy
+			done
 		else
 			if [ "$_network_type" = "alias" ]; then
 				_ip=$( _get_ip_var "$_pname" )
